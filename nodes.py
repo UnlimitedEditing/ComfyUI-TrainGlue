@@ -1,6 +1,7 @@
 import folder_paths
 import comfy.sd
 import comfy.utils
+from comfy.cli_args import args
 
 
 class TrainGlueUNETLoader:
@@ -9,6 +10,9 @@ class TrainGlueUNETLoader:
     Core TrainLoraNode crashes on Graydient (comfy-aimdo 0.6.0) when the model is a dynamic-VRAM patcher:
     'aimdo memory compile error' with gradient checkpointing, a hard 'CUDA error: invalid argument' without.
     comfy.sd.load_diffusion_model(disable_dynamic=True) gives a plain ModelPatcher that loads fully to the GPU.
+    That alone is not enough: aimdo's 'model compiler' malloc graph (comfy.model_prefetch) records allocations per
+    forward and raises 'aimdo memory compile error' when checkpointing re-runs a block during backward. It is gated
+    by args.disable_comfy_compiler, so this loader also switches it off for the rest of the job.
     """
 
     @classmethod
@@ -32,6 +36,7 @@ class TrainGlueUNETLoader:
             opts["fp8_optimizations"] = True
         elif weight_dtype == "fp8_e5m2":
             opts["dtype"] = torch.float8_e5m2
+        args.disable_comfy_compiler = True
         path = folder_paths.get_full_path_or_raise("diffusion_models", unet_name)
         return (comfy.sd.load_diffusion_model(path, model_options=opts, disable_dynamic=True),)
 
