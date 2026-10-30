@@ -1,3 +1,6 @@
+import os
+import time
+
 import folder_paths
 import comfy.sd
 import comfy.utils
@@ -41,5 +44,53 @@ class TrainGlueUNETLoader:
         return (comfy.sd.load_diffusion_model(path, model_options=opts, disable_dynamic=True),)
 
 
-NODE_CLASS_MAPPINGS = {"TrainGlueUNETLoader": TrainGlueUNETLoader}
-NODE_DISPLAY_NAME_MAPPINGS = {"TrainGlueUNETLoader": "Load Diffusion Model (no DynamicVRAM, for training)"}
+class TrainGluePackLora:
+    """Pack a trained LoRA (LORA_MODEL) into lossless M3DS PNG(s) so it comes back through an image output.
+
+    Graydient only collects image outputs from a job; the .safetensors SaveLoRA writes is not delivered.
+    Decode with unpack_lora_png.py (this repo) or Meshsmuggler's unsmuggle.html.
+    """
+
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "lora": ("LORA_MODEL",),
+            "filename_prefix": ("STRING", {"default": "lora_pack/lora"}),
+            "lora_name": ("STRING", {"default": "trained_lora.safetensors"}),
+            "max_dimension": ("INT", {"default": 8192, "min": 256, "max": 16384, "step": 64}),
+            "compress": ("BOOLEAN", {"default": False}),
+        }}
+
+    RETURN_TYPES = ()
+    FUNCTION = "pack_it"
+    OUTPUT_NODE = True
+    CATEGORY = "model/training"
+
+    def pack_it(self, lora, filename_prefix, lora_name, max_dimension, compress):
+        import safetensors.torch
+        from PIL import Image
+        from . import m3ds
+
+        t0 = time.time()
+        data = safetensors.torch.save({k: v.detach().contiguous().cpu() for k, v in lora.items()})
+        arrays = m3ds.pack(data, lora_name, max_dimension=int(max_dimension), compress=bool(compress))
+        folder, name, counter, subfolder, _ = folder_paths.get_save_image_path(filename_prefix, self.output_dir)
+        results = []
+        for arr in arrays:
+            fname = f"{name}_{counter:05}_.png"
+            Image.fromarray(arr, mode="RGB").save(os.path.join(folder, fname), format="PNG", compress_level=1)
+            results.append({"filename": fname, "subfolder": subfolder, "type": "output"})
+            counter += 1
+        print(f"[TrainGlue] packed {lora_name}: {len(data)} bytes -> {len(arrays)} PNG(s), "
+              f"first {arrays[0].shape[1]}x{arrays[0].shape[0]}, {time.time() - t0:.1f}s")
+        return {"ui": {"images": results}}
+
+
+NODE_CLASS_MAPPINGS = {"TrainGlueUNETLoader": TrainGlueUNETLoader, "TrainGluePackLora": TrainGluePackLora}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "TrainGlueUNETLoader": "Load Diffusion Model (no DynamicVRAM, for training)",
+    "TrainGluePackLora": "Pack LoRA as PNG (M3DS)",
+}
